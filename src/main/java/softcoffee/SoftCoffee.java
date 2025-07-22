@@ -437,7 +437,7 @@ public class SoftCoffee {
 
                     PreparedStatement stmt = con.prepareStatement(sql);
                     stmt.setInt(1, body.getInt("codigo"));
-                    stmt.setInt(2, body.getInt("idProducto")); // vinculado
+                    stmt.setInt(2, body.getInt("idProducto"));
                     stmt.setString(3, body.getString("unidad"));
                     stmt.setString(4, body.getString("nombre"));
                     stmt.setString(5, body.getString("presentacion"));
@@ -497,13 +497,11 @@ public class SoftCoffee {
                 try (Connection con = ConexionEC2.obtenerConexion()) {
                     con.setAutoCommit(false);
 
-                    // Paso 1: cambiar estado del producto
                     PreparedStatement stmtProd = con.prepareStatement(
                             "UPDATE INVENTARIO SET estado = 'agotado' WHERE Codigo_producto = ?");
                     stmtProd.setInt(1, id);
                     int actualizadosProd = stmtProd.executeUpdate();
 
-                    // Paso 2: cambiar estado de todos los insumos relacionados
                     PreparedStatement stmtInsumos = con.prepareStatement(
                             "UPDATE INSUMO SET estado = 'agotado' WHERE Codigo_producto = ?");
                     stmtInsumos.setInt(1, id);
@@ -610,9 +608,9 @@ public class SoftCoffee {
                         categorias.add(cat);
                     }
 
-                    ctx.json(categorias); // Devuelve el JSON de categorías
+                    ctx.json(categorias);
                 } catch (SQLException e) {
-                    e.printStackTrace(); // ← te muestra el error real en consola
+                    e.printStackTrace();
                     ctx.status(500).result("Error al obtener categorías: " + e.getMessage());
                 }
             });
@@ -669,6 +667,67 @@ public class SoftCoffee {
 
                     JSONArray resultado = new JSONArray(productosMap.values());
                     ctx.status(200).result(resultado.toString());
+                } catch (SQLException e) {
+                    ctx.status(500).result("Error al obtener productos: " + e.getMessage());
+                }
+            });
+
+            //
+            get("/productos/categoria/{nombre}", ctx -> {
+                String categoriaBuscada = ctx.pathParam("nombre").toLowerCase();
+
+                // Reutiliza la lógica actual, pero filtra con WHERE
+                String sql = """
+                            SELECT
+                                m.ID_menu,
+                                m.nombre_producto,
+                                m.precio_venta,
+                                m.Descripcion,
+                                m.img_url,
+                                c.Nombre_categoria AS categoria,
+                                i.Codigo_insumo,
+                                i.nombre_insumo AS insumo_nombre
+                            FROM MENU m
+                            JOIN CATEGORIAS c ON m.Identificador_categoria = c.Identificador_categoria
+                            LEFT JOIN CONTENIDO co ON m.ID_menu = co.ID_menu
+                            LEFT JOIN INSUMO i ON co.Codigo_insumo = i.Codigo_insumo
+                            WHERE LOWER(c.Nombre_categoria) = ?
+                            ORDER BY m.ID_menu
+                        """;
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement stmt = con.prepareStatement(sql);
+                    stmt.setString(1, categoriaBuscada);
+                    ResultSet rs = stmt.executeQuery();
+
+                    Map<Integer, JSONObject> productosMap = new HashMap<>();
+
+                    while (rs.next()) {
+                        int idMenu = rs.getInt("ID_menu");
+
+                        JSONObject producto = productosMap.getOrDefault(idMenu, new JSONObject());
+                        if (!producto.has("id")) {
+                            producto.put("id", idMenu);
+                            producto.put("nombre", rs.getString("nombre_producto"));
+                            producto.put("precio", rs.getDouble("precio_venta"));
+                            producto.put("descripcion", rs.getString("Descripcion"));
+                            producto.put("categoria", rs.getString("categoria").toLowerCase());
+                            String imagenUrl = rs.getString("img_url");
+                            producto.put("img_url",
+                                    imagenUrl != null && !imagenUrl.isEmpty() ? imagenUrl : "img/default.jpg");
+                            producto.put("insumos", new JSONArray());
+                            productosMap.put(idMenu, producto);
+                        }
+
+                        String insumoNombre = rs.getString("insumo_nombre");
+                        if (insumoNombre != null && !insumoNombre.isEmpty()) {
+                            producto.getJSONArray("insumos").put(insumoNombre);
+                        }
+                    }
+
+                    JSONArray resultado = new JSONArray(productosMap.values());
+                    ctx.status(200).result(resultado.toString());
+
                 } catch (SQLException e) {
                     ctx.status(500).result("Error al obtener productos: " + e.getMessage());
                 }
@@ -797,7 +856,6 @@ public class SoftCoffee {
                     }
                 });
             });
-
             //
 
             //
