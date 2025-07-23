@@ -3,10 +3,8 @@ package softcoffee;
 import softcoffee.models.MenuRequest;
 import io.javalin.Javalin;
 import static io.javalin.apibuilder.ApiBuilder.*;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -14,13 +12,13 @@ import java.util.List;
 import java.util.Map;
 
 public class SoftCoffee {
-    public static void main(String[] args) {
-        Javalin app = Javalin.create(config -> {
-            config.plugins.enableCors(cors -> {
-                cors.add(it -> {
-                    it.anyHost();
-                });
-            });
+    public static void main(String[] args) { 
+        Javalin app = Javalin.create(config -> { 
+            config.plugins.enableCors(cors -> { 
+                cors.add(it -> { 
+                    it.anyHost(); 
+                }); 
+            }); 
         }).start("0.0.0.0", 7000);
 
         app.routes(() -> {
