@@ -5,6 +5,8 @@ import io.javalin.Javalin;
 import static io.javalin.apibuilder.ApiBuilder.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.math.BigDecimal;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -12,13 +14,13 @@ import java.util.List;
 import java.util.Map;
 
 public class SoftCoffee {
-    public static void main(String[] args) { 
-        Javalin app = Javalin.create(config -> { 
-            config.plugins.enableCors(cors -> { 
-                cors.add(it -> { 
-                    it.anyHost(); 
-                }); 
-            }); 
+    public static void main(String[] args) {
+        Javalin app = Javalin.create(config -> {
+            config.plugins.enableCors(cors -> {
+                cors.add(it -> {
+                    it.anyHost();
+                });
+            });
         }).start("0.0.0.0", 7000);
 
         app.routes(() -> {
@@ -854,7 +856,199 @@ public class SoftCoffee {
                     }
                 });
             });
+
             //
+            post("/pedido", ctx -> {
+                JSONObject datos = new JSONObject(ctx.body());
+
+                String clienteNombre = datos.getString("clienteNombre");
+                String metodoPago = datos.getString("metodoPago");
+                JSONArray carrito = datos.getJSONArray("carrito");
+                BigDecimal total = datos.getBigDecimal("total");
+
+                if (clienteNombre == null || carrito.isEmpty()) {
+                    ctx.status(400).result("Faltan datos del cliente o productos");
+                    return;
+                }
+
+                String[] partes = clienteNombre.trim().split(" ");
+                if (partes.length < 2) {
+                    ctx.status(400).result("Por favor ingresa nombre y apellido");
+                    return;
+                }
+
+                String nombre = partes[0];
+                String apellido = partes[1];
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    // Buscar o insertar cliente
+                    PreparedStatement buscar = con.prepareStatement(
+                            "SELECT Num_cliente FROM CLIENTE WHERE nombre = ? AND apellido = ?");
+                    buscar.setString(1, nombre);
+                    buscar.setString(2, apellido);
+                    ResultSet rs = buscar.executeQuery();
+
+                    int numCliente;
+                    if (rs.next()) {
+                        numCliente = rs.getInt("Num_cliente");
+                    } else {
+                        PreparedStatement insertar = con.prepareStatement(
+                                "INSERT INTO CLIENTE (nombre, apellido) VALUES (?, ?)",
+                                Statement.RETURN_GENERATED_KEYS);
+                        insertar.setString(1, nombre);
+                        insertar.setString(2, apellido);
+                        insertar.executeUpdate();
+                        ResultSet generados = insertar.getGeneratedKeys();
+                        generados.next();
+                        numCliente = generados.getInt(1);
+                    }
+
+                    // Insertar en PEDIDO
+                    int numTicket = (int) (Math.random() * 900000 + 100000);
+                    PreparedStatement pedidoStmt = con.prepareStatement(
+                            "INSERT INTO PEDIDO (Num_cliente, metodo_pago, Num_ticket, monto_total) VALUES (?, ?, ?, ?)",
+                            Statement.RETURN_GENERATED_KEYS);
+                    pedidoStmt.setInt(1, numCliente);
+                    pedidoStmt.setString(2, metodoPago);
+                    pedidoStmt.setInt(3, numTicket);
+                    pedidoStmt.setBigDecimal(4, total);
+                    pedidoStmt.executeUpdate();
+                    ResultSet pedidoKeys = pedidoStmt.getGeneratedKeys();
+                    pedidoKeys.next();
+                    int numOrden = pedidoKeys.getInt(1);
+
+                    // Insertar en PEDIDO_MENU
+                    for (int i = 0; i < carrito.length(); i++) {
+                        JSONObject item = carrito.getJSONObject(i);
+                        int idMenu = item.getInt("id");
+                        int cantidad = item.getInt("cantidad");
+                        BigDecimal precio = item.getBigDecimal("precio");
+
+                        PreparedStatement detalleStmt = con.prepareStatement(
+                                "INSERT INTO PEDIDO_MENU (Num_orden, ID_menu, precio_venta, cantidad_productos) VALUES (?, ?, ?, ?)");
+                        detalleStmt.setInt(1, numOrden);
+                        detalleStmt.setInt(2, idMenu);
+                        detalleStmt.setBigDecimal(3, precio);
+                        detalleStmt.setInt(4, cantidad);
+                        detalleStmt.executeUpdate();
+                    }
+
+                    JSONObject respuesta = new JSONObject();
+                    respuesta.put("mensaje", "Pedido registrado correctamente con orden #" + numOrden);
+                    respuesta.put("numCliente", numCliente);
+                    respuesta.put("numTicket", numTicket);
+
+                    ctx.status(200).json(respuesta); // ✅ Ahora sí puede hacer res.json() en el frontend
+
+                } catch (SQLException e) {
+                    ctx.status(500).result("Error interno: " + e.getMessage());
+                }
+            });
+
+            //
+            get("/pedidos/pendientes", ctx -> {
+                List<Map<String, Object>> pedidos = new ArrayList<>();
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement stmt = con.prepareStatement(
+                            "SELECT P.Num_orden, C.nombre, C.apellido " +
+                                    "FROM PEDIDO P " +
+                                    "JOIN CLIENTE C ON P.Num_cliente = C.Num_cliente " +
+                                    "WHERE P.estado = 'pendiente'");
+
+                    ResultSet rs = stmt.executeQuery();
+                    while (rs.next()) {
+                        Map<String, Object> pedido = new HashMap<>();
+                        pedido.put("id", rs.getInt("Num_orden"));
+                        pedido.put("nombreCompleto", rs.getString("nombre") + " " + rs.getString("apellido"));
+                        pedidos.add(pedido);
+                    }
+
+                    ctx.json(pedidos);
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    ctx.status(500).result("Error al obtener pedidos pendientes: " + e.getMessage());
+                }
+            });
+
+            //
+            get("/pedido/{id}/detalle", ctx -> {
+                int idPedido = Integer.parseInt(ctx.pathParam("id"));
+                Map<String, Object> resultado = new HashMap<>();
+                List<Map<String, Object>> productos = new ArrayList<>();
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    // Info general del pedido + cliente
+                    PreparedStatement infoPedido = con.prepareStatement(
+                            "SELECT P.Num_orden, P.metodo_pago, P.monto_total, P.hora_pedido, C.nombre, C.apellido " +
+                                    "FROM PEDIDO P JOIN CLIENTE C ON P.Num_cliente = C.Num_cliente " +
+                                    "WHERE P.Num_orden = ?");
+                    infoPedido.setInt(1, idPedido);
+                    ResultSet rsPedido = infoPedido.executeQuery();
+
+                    if (!rsPedido.next()) {
+                        ctx.status(404).json(Map.of("error", "Pedido no encontrado"));
+                        return;
+                    }
+
+                    resultado.put("id", rsPedido.getInt("Num_orden"));
+                    resultado.put("cliente", rsPedido.getString("nombre") + " " + rsPedido.getString("apellido"));
+                    resultado.put("metodo", rsPedido.getString("metodo_pago"));
+                    resultado.put("monto", rsPedido.getDouble("monto_total"));
+                    resultado.put("hora", rsPedido.getString("hora_pedido"));
+
+                    // Productos del pedido
+                    PreparedStatement productosStmt = con.prepareStatement(
+                            "SELECT M.nombre_producto, PM.cantidad_productos " +
+                                    "FROM PEDIDO_MENU PM JOIN MENU M ON PM.ID_menu = M.ID_menu " +
+                                    "WHERE PM.Num_orden = ?");
+                    productosStmt.setInt(1, idPedido);
+                    ResultSet rsProductos = productosStmt.executeQuery();
+
+                    while (rsProductos.next()) {
+                        Map<String, Object> item = new HashMap<>();
+                        item.put("nombre", rsProductos.getString("nombre_producto"));
+                        item.put("cantidad", rsProductos.getInt("cantidad_productos"));
+                        productos.add(item);
+                    }
+
+                    resultado.put("productos", productos);
+                    ctx.json(resultado);
+
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    ctx.status(500).result("Error al consultar detalles del pedido: " + e.getMessage());
+                }
+            });
+
+            //
+
+            path("api", () -> {
+                get("/pedidos/cliente", ctx -> {
+                    List<Map<String, Object>> pedidos = new ArrayList<>();
+
+                    try (Connection con = ConexionEC2.obtenerConexion()) {
+                        PreparedStatement stmt = con.prepareStatement(
+                                "SELECT P.Num_orden, C.nombre, C.apellido, P.metodo_pago " +
+                                        "FROM PEDIDO P JOIN CLIENTE C ON P.Num_cliente = C.Num_cliente " +
+                                        "ORDER BY P.hora_pedido DESC");
+                        ResultSet rs = stmt.executeQuery();
+
+                        while (rs.next()) {
+                            Map<String, Object> pedido = new HashMap<>();
+                            pedido.put("id", rs.getInt("Num_orden"));
+                            pedido.put("cliente", rs.getString("nombre") + " " + rs.getString("apellido"));
+                            pedido.put("metodo", rs.getString("metodo_pago"));
+                            pedidos.add(pedido);
+                        }
+
+                        ctx.json(pedidos);
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                        ctx.status(500).result("Error al obtener pedidos del cliente");
+                    }
+                });
+            });
 
             //
 
