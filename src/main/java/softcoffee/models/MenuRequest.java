@@ -9,6 +9,6 @@ public class MenuRequest {
     public BigDecimal precio;
     public int categoriaId;
     public String descripcion;
-    public String imagen;
+    public String img_url; //imagen
     public List<String> insumos;
 }

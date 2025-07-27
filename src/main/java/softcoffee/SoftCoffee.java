@@ -615,7 +615,7 @@ public class SoftCoffee {
                 }
             });
 
-            //
+            // CATALOGO ADMINISTRADOR : VISUALIZAR LOS PRODUCTOS EN EL FRONTEND
             get("/productos", ctx -> {
                 try (Connection con = ConexionEC2.obtenerConexion()) {
                     String sql = """
@@ -632,6 +632,7 @@ public class SoftCoffee {
                                 JOIN CATEGORIAS c ON m.Identificador_categoria = c.Identificador_categoria
                                 LEFT JOIN CONTENIDO co ON m.ID_menu = co.ID_menu
                                 LEFT JOIN INSUMO i ON co.Codigo_insumo = i.Codigo_insumo
+                                WHERE m.estado = 'activo'
                                 ORDER BY m.ID_menu
                             """;
 
@@ -672,7 +673,7 @@ public class SoftCoffee {
                 }
             });
 
-            //
+            // CATALOGO CLIENTE : VISUALIZAR PRODUCTOS
             get("/productos/categoria/{nombre}", ctx -> {
                 String categoriaBuscada = ctx.pathParam("nombre").toLowerCase();
 
@@ -692,6 +693,7 @@ public class SoftCoffee {
                             LEFT JOIN CONTENIDO co ON m.ID_menu = co.ID_menu
                             LEFT JOIN INSUMO i ON co.Codigo_insumo = i.Codigo_insumo
                             WHERE LOWER(c.Nombre_categoria) = ?
+                            AND m.estado = 'activo'
                             ORDER BY m.ID_menu
                         """;
 
@@ -733,31 +735,37 @@ public class SoftCoffee {
                 }
             });
 
-            //
+            // CATALOGO ADMINISTRADOR : CATALOGO -> INSERTAR DATOS
             post("/menu", ctx -> {
                 MenuRequest datos = ctx.bodyAsClass(MenuRequest.class);
+
+                // Si no se envió una imagen, usamos una por defecto
+                if (datos.img_url == null || datos.img_url.isBlank()) {
+                    datos.img_url = "img/default.jpg";
+                }
 
                 try (Connection con = ConexionEC2.obtenerConexion()) {
                     con.setAutoCommit(false);
 
-                    // Insertar en MENU
+                    // INSERT actualizado con el campo img_url
                     PreparedStatement stmtMenu = con.prepareStatement(
-                            "INSERT INTO MENU (Identificador_categoria, nombre_producto, precio_venta, Descripcion) VALUES (?, ?, ?, ?)",
+                            "INSERT INTO MENU (Identificador_categoria, nombre_producto, precio_venta, Descripcion, img_url) VALUES (?, ?, ?, ?, ?)",
                             Statement.RETURN_GENERATED_KEYS);
                     stmtMenu.setInt(1, datos.categoriaId);
                     stmtMenu.setString(2, datos.nombre);
                     stmtMenu.setBigDecimal(3, datos.precio);
                     stmtMenu.setString(4, datos.descripcion);
+                    stmtMenu.setString(5, datos.img_url);
                     stmtMenu.executeUpdate();
 
                     ResultSet rs = stmtMenu.getGeneratedKeys();
                     if (rs.next()) {
                         int nuevoIdMenu = rs.getInt(1);
 
-                        PreparedStatement buscarInsumo = con
-                                .prepareStatement("SELECT Codigo_insumo FROM INSUMO WHERE nombre_insumo = ?");
-                        PreparedStatement stmtContenido = con
-                                .prepareStatement("INSERT INTO CONTENIDO (ID_menu, Codigo_insumo) VALUES (?, ?)");
+                        PreparedStatement buscarInsumo = con.prepareStatement(
+                                "SELECT Codigo_insumo FROM INSUMO WHERE nombre_insumo = ?");
+                        PreparedStatement stmtContenido = con.prepareStatement(
+                                "INSERT INTO CONTENIDO (ID_menu, Codigo_insumo) VALUES (?, ?)");
 
                         for (String nombreInsumo : datos.insumos) {
                             buscarInsumo.setString(1, nombreInsumo);
@@ -779,7 +787,7 @@ public class SoftCoffee {
                 }
             });
 
-            //
+            // CATALOGO ADMINISTRADOR : MENU -> ACTUALIZAR DAOT/BORRAR DATOS
             path("menu", () -> {
                 put("{id}", ctx -> {
                     MenuRequest datos = ctx.bodyAsClass(MenuRequest.class);
@@ -788,32 +796,45 @@ public class SoftCoffee {
                     try (Connection con = ConexionEC2.obtenerConexion()) {
                         con.setAutoCommit(false);
 
+                        // Verifica campos obligatorios
+                        if (datos.nombre == null || datos.precio == null || datos.categoriaId == 0
+                                || datos.descripcion == null) {
+                            ctx.status(400).result("Faltan campos obligatorios en el cuerpo de la solicitud");
+                            return;
+                        }
+
+                        // Actualiza campos básicos en MENU, incluyendo imagen
                         PreparedStatement stmtMenu = con.prepareStatement(
-                                "UPDATE MENU SET nombre_producto = ?, precio_venta = ?, Identificador_categoria = ?, Descripcion = ? WHERE ID_menu = ?");
+                                "UPDATE MENU SET nombre_producto = ?, precio_venta = ?, Identificador_categoria = ?, Descripcion = ?, img_url = ? WHERE ID_menu = ?");
                         stmtMenu.setString(1, datos.nombre);
                         stmtMenu.setBigDecimal(2, datos.precio);
                         stmtMenu.setInt(3, datos.categoriaId);
                         stmtMenu.setString(4, datos.descripcion);
-                        stmtMenu.setInt(5, idMenu);
+                        stmtMenu.setString(5, datos.img_url);
+                        stmtMenu.setInt(6, idMenu);
                         stmtMenu.executeUpdate();
 
+                        // Actualiza insumos del producto
                         PreparedStatement borrar = con.prepareStatement("DELETE FROM CONTENIDO WHERE ID_menu = ?");
                         borrar.setInt(1, idMenu);
                         borrar.executeUpdate();
 
-                        PreparedStatement buscarInsumo = con.prepareStatement(
-                                "SELECT Codigo_insumo FROM INSUMO WHERE nombre_insumo = ?");
-                        PreparedStatement insertar = con.prepareStatement(
-                                "INSERT INTO CONTENIDO (ID_menu, Codigo_insumo) VALUES (?, ?)");
+                        PreparedStatement buscarInsumo = con
+                                .prepareStatement("SELECT Codigo_insumo FROM INSUMO WHERE nombre_insumo = ?");
+                        PreparedStatement insertar = con
+                                .prepareStatement("INSERT INTO CONTENIDO (ID_menu, Codigo_insumo) VALUES (?, ?)");
 
                         for (String insumo : datos.insumos) {
                             buscarInsumo.setString(1, insumo);
-                            ResultSet res = buscarInsumo.executeQuery();
-                            if (res.next()) {
-                                int codigo = res.getInt("Codigo_insumo");
-                                insertar.setInt(1, idMenu);
-                                insertar.setInt(2, codigo);
-                                insertar.executeUpdate();
+                            try (ResultSet res = buscarInsumo.executeQuery()) {
+                                if (res.next()) {
+                                    int codigo = res.getInt("Codigo_insumo");
+                                    insertar.setInt(1, idMenu);
+                                    insertar.setInt(2, codigo);
+                                    insertar.executeUpdate();
+                                } else {
+                                    System.err.println("Insumo no encontrado: " + insumo);
+                                }
                             }
                         }
 
@@ -832,27 +853,29 @@ public class SoftCoffee {
                     try (Connection con = ConexionEC2.obtenerConexion()) {
                         con.setAutoCommit(false);
 
+                        // Opcional: también puedes borrar su contenido si lo prefieres
                         PreparedStatement borrarContenido = con.prepareStatement(
                                 "DELETE FROM CONTENIDO WHERE ID_menu = ?");
                         borrarContenido.setInt(1, idMenu);
                         borrarContenido.executeUpdate();
 
-                        PreparedStatement borrarMenu = con.prepareStatement(
-                                "DELETE FROM MENU WHERE ID_menu = ?");
-                        borrarMenu.setInt(1, idMenu);
-                        int filas = borrarMenu.executeUpdate();
+                        // Actualiza el estado del producto en vez de eliminarlo
+                        PreparedStatement actualizarEstado = con.prepareStatement(
+                                "UPDATE MENU SET estado = 'inactivo' WHERE ID_menu = ?");
+                        actualizarEstado.setInt(1, idMenu);
+                        int filas = actualizarEstado.executeUpdate();
 
                         con.commit();
 
                         if (filas > 0) {
-                            ctx.status(200).result("Producto eliminado correctamente");
+                            ctx.status(200).result("Producto desactivado correctamente");
                         } else {
                             ctx.status(404).result("Producto no encontrado");
                         }
 
                     } catch (Exception e) {
                         e.printStackTrace();
-                        ctx.status(500).result("Error al eliminar producto: " + e.getMessage());
+                        ctx.status(500).result("Error al desactivar producto: " + e.getMessage());
                     }
                 });
             });
@@ -938,7 +961,7 @@ public class SoftCoffee {
                     respuesta.put("numCliente", numCliente);
                     respuesta.put("numTicket", numTicket);
 
-                    ctx.status(200).json(respuesta); // ✅ Ahora sí puede hacer res.json() en el frontend
+                    ctx.status(200).json(respuesta);
 
                 } catch (SQLException e) {
                     ctx.status(500).result("Error interno: " + e.getMessage());
