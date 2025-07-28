@@ -2,6 +2,9 @@ package softcoffee;
 
 import softcoffee.models.MenuRequest;
 import io.javalin.Javalin;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+import java.lang.reflect.Type;
 import static io.javalin.apibuilder.ApiBuilder.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -35,7 +38,7 @@ public class SoftCoffee {
 
                 try (Connection con = ConexionEC2.obtenerConexion()) {
                     PreparedStatement stmt = con.prepareStatement(
-                            "SELECT rol, estado FROM USUARIOS_EMPLEADO WHERE nombre = ? AND contraseña = ?");
+                            "SELECT ID_usuario, nombre, rol, estado FROM USUARIOS_EMPLEADO WHERE nombre = ? AND contraseña = ?");
                     stmt.setString(1, nombre);
                     stmt.setString(2, contraseña);
 
@@ -46,17 +49,26 @@ public class SoftCoffee {
                         String estadoUsuario = rs.getString("estado").trim().toLowerCase();
 
                         if (!estadoUsuario.equals("activo")) {
-                            ctx.status(403).result("Usuario inactivo. Acceso denegado.");
+                            ctx.status(403).result("{\"error\": \"Usuario inactivo. Acceso denegado.\"}");
                         } else if (rolUsuario.equals(rolEsperado.toLowerCase())) {
-                            ctx.status(200).result("Acceso concedido");
+                            // ✅ Construir respuesta en formato JSON
+                            JSONObject respuesta = new JSONObject();
+                            respuesta.put("id_usuario", rs.getInt("ID_usuario"));
+                            respuesta.put("nombre", rs.getString("nombre"));
+                            respuesta.put("rol", rolUsuario);
+
+                            ctx.status(200).result(respuesta.toString());
                         } else {
-                            ctx.status(403).result("Acceso denegado para este rol");
+                            ctx.status(403).result("{\"error\": \"Acceso denegado para este rol\"}");
                         }
                     } else {
-                        ctx.status(401).result("Nombre o contraseña incorrectos");
+                        ctx.status(401).result("{\"error\": \"Nombre o contraseña incorrectos\"}");
                     }
                 } catch (SQLException e) {
-                    ctx.status(500).result("Error interno: " + e.getMessage());
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error interno");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
                 }
             });
 
@@ -343,7 +355,7 @@ public class SoftCoffee {
                 try (Connection con = ConexionEC2.obtenerConexion()) {
                     String sql = """
                                 SELECT I.Codigo_insumo, I.unidad_medida, I.nombre_insumo, I.presentacion, I.contenido,
-                                       P.Producto AS nombre_producto
+                                P.Producto AS nombre_producto
                                 FROM INSUMO I
                                 LEFT JOIN INVENTARIO P ON I.Codigo_producto = P.Codigo_producto
                                 WHERE I.estado = 'existente'
@@ -995,6 +1007,76 @@ public class SoftCoffee {
             });
 
             //
+            get("/pedidos/aprobados", ctx -> {
+                List<Map<String, Object>> pedidos = new ArrayList<>();
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement stmt = con.prepareStatement(
+                            "SELECT P.Num_orden, C.nombre, C.apellido " +
+                                    "FROM PEDIDO P " +
+                                    "JOIN CLIENTE C ON P.Num_cliente = C.Num_cliente " +
+                                    "WHERE P.estado = 'aprobado'");
+
+                    ResultSet rs = stmt.executeQuery();
+                    while (rs.next()) {
+                        int idPedido = rs.getInt("Num_orden");
+                        Map<String, Object> pedido = new HashMap<>();
+                        pedido.put("id", idPedido);
+                        pedido.put("cliente", rs.getString("nombre") + " " + rs.getString("apellido"));
+
+                        // Obtener productos del pedido (solo nombre y cantidad)
+                        PreparedStatement productosStmt = con.prepareStatement(
+                                "SELECT M.nombre_producto, PM.cantidad_productos " +
+                                        "FROM PEDIDO_MENU PM " +
+                                        "JOIN MENU M ON PM.ID_menu = M.ID_menu " +
+                                        "WHERE PM.Num_orden = ?");
+                        productosStmt.setInt(1, idPedido);
+                        ResultSet rsProductos = productosStmt.executeQuery();
+
+                        List<Map<String, Object>> productos = new ArrayList<>();
+                        while (rsProductos.next()) {
+                            Map<String, Object> item = new HashMap<>();
+                            item.put("nombre", rsProductos.getString("nombre_producto"));
+                            item.put("cantidad", rsProductos.getInt("cantidad_productos"));
+                            productos.add(item);
+                        }
+
+                        pedido.put("productos", productos);
+                        pedidos.add(pedido);
+                    }
+
+                    ctx.json(pedidos);
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    ctx.status(500).result("Error al obtener pedidos aprobados: " + e.getMessage());
+                }
+            });
+
+            //
+            path("api", () -> {
+                put("/pedido/{id}/entregar", ctx -> {
+                    int idPedido = Integer.parseInt(ctx.pathParam("id"));
+
+                    try (Connection con = ConexionEC2.obtenerConexion()) {
+                        PreparedStatement stmt = con.prepareStatement(
+                                "UPDATE PEDIDO SET estado = 'finalizado' WHERE Num_orden = ?");
+                        stmt.setInt(1, idPedido);
+
+                        int updated = stmt.executeUpdate();
+
+                        if (updated > 0) {
+                            ctx.status(200).json(Map.of("message", "✅ Pedido finalizado correctamente"));
+                        } else {
+                            ctx.status(404).json(Map.of("error", "❌ Pedido no encontrado"));
+                        }
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                        ctx.status(500).json(Map.of("error", "❌ Error al actualizar el pedido"));
+                    }
+                });
+            });
+
+            // APROBACIONDE PRODUCTO : MOSTRAR LOS PRODUCTOS PARA CONFIRMAR
             get("/pedido/{id}/detalle", ctx -> {
                 int idPedido = Integer.parseInt(ctx.pathParam("id"));
                 Map<String, Object> resultado = new HashMap<>();
@@ -1022,7 +1104,7 @@ public class SoftCoffee {
 
                     // Productos del pedido
                     PreparedStatement productosStmt = con.prepareStatement(
-                            "SELECT M.nombre_producto, PM.cantidad_productos " +
+                            "SELECT M.nombre_producto, PM.cantidad_productos, M.precio_venta " +
                                     "FROM PEDIDO_MENU PM JOIN MENU M ON PM.ID_menu = M.ID_menu " +
                                     "WHERE PM.Num_orden = ?");
                     productosStmt.setInt(1, idPedido);
@@ -1032,6 +1114,7 @@ public class SoftCoffee {
                         Map<String, Object> item = new HashMap<>();
                         item.put("nombre", rsProductos.getString("nombre_producto"));
                         item.put("cantidad", rsProductos.getInt("cantidad_productos"));
+                        item.put("precio", rsProductos.getDouble("precio_venta"));
                         productos.add(item);
                     }
 
@@ -1045,7 +1128,6 @@ public class SoftCoffee {
             });
 
             //
-
             path("api", () -> {
                 get("/pedidos/cliente", ctx -> {
                     List<Map<String, Object>> pedidos = new ArrayList<>();
@@ -1054,7 +1136,8 @@ public class SoftCoffee {
                         PreparedStatement stmt = con.prepareStatement(
                                 "SELECT P.Num_orden, C.nombre, C.apellido, P.metodo_pago " +
                                         "FROM PEDIDO P JOIN CLIENTE C ON P.Num_cliente = C.Num_cliente " +
-                                        "ORDER BY P.hora_pedido DESC");
+                                        "WHERE P.estado = 'pendiente' " +
+                                        "ORDER BY P.hora_pedido ASC");
                         ResultSet rs = stmt.executeQuery();
 
                         while (rs.next()) {
@@ -1071,6 +1154,225 @@ public class SoftCoffee {
                         ctx.status(500).result("Error al obtener pedidos del cliente");
                     }
                 });
+            });
+
+            //
+            path("api", () -> {
+                put("/pedido/{id}/estado", ctx -> {
+                    int pedidoId = Integer.parseInt(ctx.pathParam("id"));
+                    String nuevoEstado = ctx.body(); // se espera un string como 'aprobado'
+
+                    try (Connection con = ConexionEC2.obtenerConexion()) {
+                        PreparedStatement stmt = con.prepareStatement(
+                                "UPDATE PEDIDO SET estado = ? WHERE Num_orden = ?");
+                        stmt.setString(1, nuevoEstado);
+                        stmt.setInt(2, pedidoId);
+
+                        int filas = stmt.executeUpdate();
+                        if (filas > 0) {
+                            ctx.result("Pedido actualizado a '" + nuevoEstado + "'");
+                        } else {
+                            ctx.status(404).result("Pedido no encontrado");
+                        }
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                        ctx.status(500).result("Error al actualizar el estado");
+                    }
+                });
+            });
+
+            // INICIO TURNO CAJERO : REGISTRO DE EFECTIVO INICIAL
+            post("/api/turno/iniciar", ctx -> {
+                Gson gson = new Gson();
+                String body = ctx.body();
+
+                Type tipoMap = new TypeToken<Map<String, Object>>() {
+                }.getType();
+                Map<String, Object> data;
+
+                try {
+                    data = gson.fromJson(body, tipoMap);
+                    System.out.println("Datos recibidos en /api/turno/iniciar: " + data);
+                } catch (Exception e) {
+                    ctx.status(400).result(gson.toJson(Map.of("error", "JSON mal formado")));
+                    return;
+                }
+
+                Object efectivoObj = data.get("efectivo");
+                Object idUsuarioObj = data.get("id_usuario");
+
+                if (efectivoObj == null || idUsuarioObj == null) {
+                    ctx.status(400).result(
+                            gson.toJson(Map.of("error", "Faltan datos obligatorios: 'efectivo' o 'id_usuario'")));
+                    return;
+                }
+
+                double efectivo;
+                int idUsuario;
+
+                try {
+                    efectivo = (efectivoObj instanceof Number)
+                            ? ((Number) efectivoObj).doubleValue()
+                            : Double.parseDouble(efectivoObj.toString().trim());
+
+                    idUsuario = (idUsuarioObj instanceof Number)
+                            ? ((Number) idUsuarioObj).intValue()
+                            : Integer.parseInt(idUsuarioObj.toString().trim());
+                } catch (Exception e) {
+                    ctx.status(400).result(
+                            gson.toJson(Map.of("error", "Formato numérico inválido en 'efectivo' o 'id_usuario'")));
+                    return;
+                }
+
+                if (efectivo < 0) {
+                    ctx.status(400).result(gson.toJson(Map.of("error", "El efectivo de inicio no puede ser negativo")));
+                    return;
+                }
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement check = con.prepareStatement(
+                            "SELECT 1 FROM USUARIOS_EMPLEADO WHERE ID_usuario = ?");
+                    check.setInt(1, idUsuario);
+                    ResultSet rs = check.executeQuery();
+
+                    if (!rs.next()) {
+                        ctx.status(404).result(gson.toJson(Map.of("error", "ID_usuario no registrado")));
+                        return;
+                    }
+
+                    PreparedStatement checkTurno = con.prepareStatement(
+                            "SELECT 1 FROM TURNOS_CAJERO WHERE ID_usuario = ? AND fin_turno IS NULL");
+                    checkTurno.setInt(1, idUsuario);
+                    ResultSet turnoExistente = checkTurno.executeQuery();
+
+                    if (turnoExistente.next()) {
+                        ctx.status(409).result(
+                                gson.toJson(Map.of("error", "Ya hay un turno abierto. Primero realiza el corte.")));
+                        return;
+                    }
+
+                    PreparedStatement stmt = con.prepareStatement(
+                            "INSERT INTO TURNOS_CAJERO (ID_usuario, efectivo_inicio) VALUES (?, ?)");
+                    stmt.setInt(1, idUsuario);
+                    stmt.setDouble(2, efectivo);
+
+                    int rows = stmt.executeUpdate();
+
+                    if (rows > 0) {
+                        Map<String, Object> response = new HashMap<>();
+                        response.put("mensaje", "Turno iniciado correctamente");
+                        response.put("id_usuario", idUsuario);
+                        response.put("efectivo_inicio", efectivo);
+                        ctx.status(201).result(gson.toJson(response));
+                    } else {
+                        ctx.status(500).result(gson.toJson(Map.of("error", "No se pudo iniciar el turno")));
+                    }
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    ctx.status(500).result(gson.toJson(Map.of(
+                            "error", "Error al iniciar el turno",
+                            "detalle", e.getMessage())));
+                }
+            });
+
+            // CORTE DE TURNO : ACTALIZAR FILA CON LOS DATOS FINALES
+            post("/api/turno/cerrar", ctx -> {
+                Gson gson = new Gson();
+                Type tipoMap = new TypeToken<Map<String, Object>>() {
+                }.getType();
+                Map<String, Object> data = gson.fromJson(ctx.body(), tipoMap);
+
+                Object idObj = data.get("id_usuario");
+                Object inicioObj = data.get("inicio1");
+                Object efectivoObj = data.get("efectivo1");
+                Object tarjetaObj = data.get("tarjeta1");
+
+                if (idObj == null || inicioObj == null || efectivoObj == null || tarjetaObj == null) {
+                    ctx.status(400).result(gson.toJson(Map.of("error", "Faltan campos requeridos")));
+                    return;
+                }
+
+                int idUsuario = (int) Double.parseDouble(idObj.toString());
+                double inicioForm = Double.parseDouble(inicioObj.toString());
+                double efectivoFinal = Double.parseDouble(efectivoObj.toString());
+                double tarjeta = Double.parseDouble(tarjetaObj.toString());
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement consulta = con.prepareStatement(
+                            "SELECT efectivo_inicio FROM TURNOS_CAJERO WHERE ID_usuario = ? AND fin_turno IS NULL");
+                    consulta.setInt(1, idUsuario);
+                    ResultSet rs = consulta.executeQuery();
+
+                    if (!rs.next()) {
+                        ctx.status(404).result(gson.toJson(Map.of("error", "No hay turno activo")));
+                        return;
+                    }
+
+                    double efectivoInicioBD = rs.getDouble("efectivo_inicio");
+
+                    if (Double.compare(efectivoInicioBD, inicioForm) != 0) {
+                        ctx.status(400).result(gson.toJson(Map.of(
+                                "error", "La cantidad de inicio no coincide",
+                                "esperado", efectivoInicioBD,
+                                "ingresado", inicioForm,
+                                "coincide", false)));
+                        return;
+                    }
+
+                    PreparedStatement update = con.prepareStatement(
+                            "UPDATE TURNOS_CAJERO SET efectivo_final = ?, monto_tarjeta = ?, fin_turno = CURRENT_TIMESTAMP "
+                                    +
+                                    "WHERE ID_usuario = ? AND fin_turno IS NULL");
+                    update.setDouble(1, efectivoFinal);
+                    update.setDouble(2, tarjeta);
+                    update.setInt(3, idUsuario);
+
+                    int rows = update.executeUpdate();
+
+                    if (rows > 0) {
+                        ctx.status(200).result(gson.toJson(Map.of("success", true, "coincide", true)));
+                    } else {
+                        ctx.status(500).result(gson.toJson(Map.of("error", "No se pudo cerrar el turno")));
+                    }
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    ctx.status(500)
+                            .result(gson.toJson(Map.of("error", "Error al cerrar turno", "detalle", e.getMessage())));
+                }
+            });
+
+            // GUARDIA DE CORTES DE TURNO : VERIFICA SI EL EMPLEADO CERRO SU TURNO
+            post("/api/turno/estado", ctx -> {
+                Gson gson = new Gson();
+                Map<String, Object> datos = gson.fromJson(ctx.body(), new TypeToken<Map<String, Object>>() {
+                }.getType());
+
+                Object idObj = datos.get("id_usuario");
+                if (idObj == null) {
+                    ctx.status(400).result(gson.toJson(Map.of("error", "Falta el ID de usuario")));
+                    return;
+                }
+
+                int idUsuario = (int) Double.parseDouble(idObj.toString());
+
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement ps = con.prepareStatement(
+                            "SELECT efectivo_inicio FROM TURNOS_CAJERO WHERE ID_usuario = ? AND fin_turno IS NULL");
+                    ps.setInt(1, idUsuario);
+                    ResultSet rs = ps.executeQuery();
+
+                    if (rs.next()) {
+                        double efectivoInicio = rs.getDouble("efectivo_inicio");
+                        ctx.status(200).result(gson.toJson(Map.of(
+                                "turno_abierto", true,
+                                "efectivo_inicio", efectivoInicio)));
+                    } else {
+                        ctx.status(200).result(gson.toJson(Map.of("turno_abierto", false)));
+                    }
+                } catch (SQLException e) {
+                    ctx.status(500).result(
+                            gson.toJson(Map.of("error", "Error al verificar turno", "detalle", e.getMessage())));
+                }
             });
 
             //
