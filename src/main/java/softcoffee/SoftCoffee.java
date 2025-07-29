@@ -18,6 +18,13 @@ import java.util.Map;
 
 public class SoftCoffee {
     public static void main(String[] args) {
+        /*Javalin app = Javalin.create(config -> {
+            config.bundledPlugins.enableCors(cors -> {
+                cors.addRule(it -> {
+                    it.anyHost();
+                });
+            });
+        }).start("0.0.0.0", 7000);*/
         Javalin app = Javalin.create(config -> {
             config.plugins.enableCors(cors -> {
                 cors.add(it -> {
@@ -51,7 +58,6 @@ public class SoftCoffee {
                         if (!estadoUsuario.equals("activo")) {
                             ctx.status(403).result("{\"error\": \"Usuario inactivo. Acceso denegado.\"}");
                         } else if (rolUsuario.equals(rolEsperado.toLowerCase())) {
-                            // ✅ Construir respuesta en formato JSON
                             JSONObject respuesta = new JSONObject();
                             respuesta.put("id_usuario", rs.getInt("ID_usuario"));
                             respuesta.put("nombre", rs.getString("nombre"));
@@ -651,7 +657,6 @@ public class SoftCoffee {
                     PreparedStatement stmt = con.prepareStatement(sql);
                     ResultSet rs = stmt.executeQuery();
 
-                    // Mapear los productos agrupando sus insumos
                     Map<Integer, JSONObject> productosMap = new HashMap<>();
 
                     while (rs.next()) {
@@ -689,7 +694,6 @@ public class SoftCoffee {
             get("/productos/categoria/{nombre}", ctx -> {
                 String categoriaBuscada = ctx.pathParam("nombre").toLowerCase();
 
-                // Reutiliza la lógica actual, pero filtra con WHERE
                 String sql = """
                             SELECT
                                 m.ID_menu,
@@ -751,7 +755,6 @@ public class SoftCoffee {
             post("/menu", ctx -> {
                 MenuRequest datos = ctx.bodyAsClass(MenuRequest.class);
 
-                // Si no se envió una imagen, usamos una por defecto
                 if (datos.img_url == null || datos.img_url.isBlank()) {
                     datos.img_url = "img/default.jpg";
                 }
@@ -759,7 +762,6 @@ public class SoftCoffee {
                 try (Connection con = ConexionEC2.obtenerConexion()) {
                     con.setAutoCommit(false);
 
-                    // INSERT actualizado con el campo img_url
                     PreparedStatement stmtMenu = con.prepareStatement(
                             "INSERT INTO MENU (Identificador_categoria, nombre_producto, precio_venta, Descripcion, img_url) VALUES (?, ?, ?, ?, ?)",
                             Statement.RETURN_GENERATED_KEYS);
@@ -808,14 +810,12 @@ public class SoftCoffee {
                     try (Connection con = ConexionEC2.obtenerConexion()) {
                         con.setAutoCommit(false);
 
-                        // Verifica campos obligatorios
                         if (datos.nombre == null || datos.precio == null || datos.categoriaId == 0
                                 || datos.descripcion == null) {
                             ctx.status(400).result("Faltan campos obligatorios en el cuerpo de la solicitud");
                             return;
                         }
 
-                        // Actualiza campos básicos en MENU, incluyendo imagen
                         PreparedStatement stmtMenu = con.prepareStatement(
                                 "UPDATE MENU SET nombre_producto = ?, precio_venta = ?, Identificador_categoria = ?, Descripcion = ?, img_url = ? WHERE ID_menu = ?");
                         stmtMenu.setString(1, datos.nombre);
@@ -826,7 +826,6 @@ public class SoftCoffee {
                         stmtMenu.setInt(6, idMenu);
                         stmtMenu.executeUpdate();
 
-                        // Actualiza insumos del producto
                         PreparedStatement borrar = con.prepareStatement("DELETE FROM CONTENIDO WHERE ID_menu = ?");
                         borrar.setInt(1, idMenu);
                         borrar.executeUpdate();
@@ -865,13 +864,11 @@ public class SoftCoffee {
                     try (Connection con = ConexionEC2.obtenerConexion()) {
                         con.setAutoCommit(false);
 
-                        // Opcional: también puedes borrar su contenido si lo prefieres
                         PreparedStatement borrarContenido = con.prepareStatement(
                                 "DELETE FROM CONTENIDO WHERE ID_menu = ?");
                         borrarContenido.setInt(1, idMenu);
                         borrarContenido.executeUpdate();
 
-                        // Actualiza el estado del producto en vez de eliminarlo
                         PreparedStatement actualizarEstado = con.prepareStatement(
                                 "UPDATE MENU SET estado = 'inactivo' WHERE ID_menu = ?");
                         actualizarEstado.setInt(1, idMenu);
@@ -916,7 +913,6 @@ public class SoftCoffee {
                 String apellido = partes[1];
 
                 try (Connection con = ConexionEC2.obtenerConexion()) {
-                    // Buscar o insertar cliente
                     PreparedStatement buscar = con.prepareStatement(
                             "SELECT Num_cliente FROM CLIENTE WHERE nombre = ? AND apellido = ?");
                     buscar.setString(1, nombre);
@@ -938,7 +934,6 @@ public class SoftCoffee {
                         numCliente = generados.getInt(1);
                     }
 
-                    // Insertar en PEDIDO
                     int numTicket = (int) (Math.random() * 900000 + 100000);
                     PreparedStatement pedidoStmt = con.prepareStatement(
                             "INSERT INTO PEDIDO (Num_cliente, metodo_pago, Num_ticket, monto_total) VALUES (?, ?, ?, ?)",
@@ -952,7 +947,6 @@ public class SoftCoffee {
                     pedidoKeys.next();
                     int numOrden = pedidoKeys.getInt(1);
 
-                    // Insertar en PEDIDO_MENU
                     for (int i = 0; i < carrito.length(); i++) {
                         JSONObject item = carrito.getJSONObject(i);
                         int idMenu = item.getInt("id");
@@ -1024,7 +1018,6 @@ public class SoftCoffee {
                         pedido.put("id", idPedido);
                         pedido.put("cliente", rs.getString("nombre") + " " + rs.getString("apellido"));
 
-                        // Obtener productos del pedido (solo nombre y cantidad)
                         PreparedStatement productosStmt = con.prepareStatement(
                                 "SELECT M.nombre_producto, PM.cantidad_productos " +
                                         "FROM PEDIDO_MENU PM " +
@@ -1083,7 +1076,6 @@ public class SoftCoffee {
                 List<Map<String, Object>> productos = new ArrayList<>();
 
                 try (Connection con = ConexionEC2.obtenerConexion()) {
-                    // Info general del pedido + cliente
                     PreparedStatement infoPedido = con.prepareStatement(
                             "SELECT P.Num_orden, P.metodo_pago, P.monto_total, P.hora_pedido, C.nombre, C.apellido " +
                                     "FROM PEDIDO P JOIN CLIENTE C ON P.Num_cliente = C.Num_cliente " +
@@ -1102,7 +1094,6 @@ public class SoftCoffee {
                     resultado.put("monto", rsPedido.getDouble("monto_total"));
                     resultado.put("hora", rsPedido.getString("hora_pedido"));
 
-                    // Productos del pedido
                     PreparedStatement productosStmt = con.prepareStatement(
                             "SELECT M.nombre_producto, PM.cantidad_productos, M.precio_venta " +
                                     "FROM PEDIDO_MENU PM JOIN MENU M ON PM.ID_menu = M.ID_menu " +
@@ -1160,7 +1151,7 @@ public class SoftCoffee {
             path("api", () -> {
                 put("/pedido/{id}/estado", ctx -> {
                     int pedidoId = Integer.parseInt(ctx.pathParam("id"));
-                    String nuevoEstado = ctx.body(); // se espera un string como 'aprobado'
+                    String nuevoEstado = ctx.body();
 
                     try (Connection con = ConexionEC2.obtenerConexion()) {
                         PreparedStatement stmt = con.prepareStatement(
