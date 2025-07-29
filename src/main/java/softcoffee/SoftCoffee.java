@@ -18,19 +18,10 @@ import java.util.Map;
 
 public class SoftCoffee {
     public static void main(String[] args) {
-        /*
-         * Javalin app = Javalin.create(config -> {
-         * config.bundledPlugins.enableCors(cors -> {
-         * cors.addRule(it -> {
-         * it.anyHost();
-         * });
-         * });
-         * }).start("0.0.0.0", 7000);
-         */
         Javalin app = Javalin.create(config -> {
             config.plugins.enableCors(cors -> {
                 cors.add(it -> {
-                    it.anyHost();
+                    it.allowHost("http://44.199.148.198");
                 });
             });
         }).start("0.0.0.0", 7000);

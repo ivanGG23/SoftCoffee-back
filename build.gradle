@@ -19,3 +19,14 @@ dependencies {
 application {
     mainClass = 'softcoffee.SoftCoffee'
 }
+
+jar {
+    manifest {
+        attributes(
+            'Main-Class': 'softcoffee.SoftCoffee'
+        )
+    }
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+}
