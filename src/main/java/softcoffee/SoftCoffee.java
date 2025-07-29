@@ -393,7 +393,7 @@ public class SoftCoffee {
                 }
             });
 
-            // TABLA DE INCATIVOS
+            // TABLA DE INACTIVOS
             get("/inventario-inactivo", ctx -> {
                 JSONArray productosArray = new JSONArray();
 
