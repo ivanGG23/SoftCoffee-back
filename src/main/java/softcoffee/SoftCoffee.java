@@ -18,13 +18,15 @@ import java.util.Map;
 
 public class SoftCoffee {
     public static void main(String[] args) {
-        /*Javalin app = Javalin.create(config -> {
-            config.bundledPlugins.enableCors(cors -> {
-                cors.addRule(it -> {
-                    it.anyHost();
-                });
-            });
-        }).start("0.0.0.0", 7000);*/
+        /*
+         * Javalin app = Javalin.create(config -> {
+         * config.bundledPlugins.enableCors(cors -> {
+         * cors.addRule(it -> {
+         * it.anyHost();
+         * });
+         * });
+         * }).start("0.0.0.0", 7000);
+         */
         Javalin app = Javalin.create(config -> {
             config.plugins.enableCors(cors -> {
                 cors.add(it -> {
@@ -1363,6 +1365,210 @@ public class SoftCoffee {
                 } catch (SQLException e) {
                     ctx.status(500).result(
                             gson.toJson(Map.of("error", "Error al verificar turno", "detalle", e.getMessage())));
+                }
+            });
+
+            // CONSULTA DE DATOS ESTADISTICOS : HORA/METODODEPAGO
+            get("/api/ventas-hora-metodo", ctx -> {
+                JSONArray respuesta = new JSONArray();
+
+                String query = """
+                            SELECT
+                            DATE_FORMAT(hora_pedido, '%H:00') AS hora,
+                            SUM(CASE WHEN metodo_pago = 'efectivo' THEN monto_total ELSE 0 END) AS efectivo,
+                            SUM(CASE WHEN metodo_pago = 'tarjeta' THEN monto_total ELSE 0 END) AS tarjeta
+                            FROM PEDIDO
+                            GROUP BY hora
+                            ORDER BY hora
+                        """;
+
+                try (Connection con = ConexionEC2.obtenerConexion();
+                        PreparedStatement stmt = con.prepareStatement(query);
+                        ResultSet rs = stmt.executeQuery()) {
+
+                    while (rs.next()) {
+                        JSONObject fila = new JSONObject();
+                        fila.put("hora", rs.getString("hora"));
+                        fila.put("efectivo", rs.getBigDecimal("efectivo"));
+                        fila.put("tarjeta", rs.getBigDecimal("tarjeta"));
+                        respuesta.put(fila);
+                    }
+
+                    ctx.status(200).result(respuesta.toString());
+
+                } catch (SQLException e) {
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error interno al obtener datos");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
+                }
+            });
+
+            // CONSULTA DE DATOS ESTADISTICOS : HORA/VENTATOTAL
+            get("/api/ventas-hora-total", ctx -> {
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement stmt = con.prepareStatement(
+                            "SELECT HOUR(hora_pedido) AS hora, " +
+                                    "       SUM(monto_total) AS total " +
+                                    "FROM PEDIDO " +
+                                    "GROUP BY HOUR(hora_pedido) " +
+                                    "ORDER BY hora;");
+
+                    ResultSet rs = stmt.executeQuery();
+                    JSONArray respuesta = new JSONArray();
+
+                    while (rs.next()) {
+                        JSONObject fila = new JSONObject();
+                        fila.put("hora", rs.getInt("hora"));
+                        fila.put("total", rs.getBigDecimal("total"));
+                        respuesta.put(fila);
+                    }
+
+                    ctx.status(200).result(respuesta.toString());
+                } catch (SQLException e) {
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error al consultar ventas por hora");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
+                }
+            });
+
+            // CONSULTA DE DATOS ESTADISTICOS : DIA/METODODEPAGO
+            get("/api/ventas-dia-metodo", ctx -> {
+                JSONArray respuesta = new JSONArray();
+
+                String query = """
+                            SELECT
+                            DAYNAME(hora_pedido) AS dia,
+                            SUM(CASE WHEN metodo_pago = 'efectivo' THEN monto_total ELSE 0 END) AS efectivo,
+                            SUM(CASE WHEN metodo_pago = 'tarjeta' THEN monto_total ELSE 0 END) AS tarjeta
+                            FROM PEDIDO
+                            GROUP BY dia
+                            ORDER BY FIELD(dia, 'Lunes', 'Marte', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo')
+                        """;
+
+                try (Connection con = ConexionEC2.obtenerConexion();
+                        PreparedStatement stmt = con.prepareStatement(query);
+                        ResultSet rs = stmt.executeQuery()) {
+
+                    while (rs.next()) {
+                        JSONObject fila = new JSONObject();
+                        fila.put("dia", rs.getString("dia"));
+                        fila.put("efectivo", rs.getBigDecimal("efectivo"));
+                        fila.put("tarjeta", rs.getBigDecimal("tarjeta"));
+                        respuesta.put(fila);
+                    }
+
+                    ctx.status(200).result(respuesta.toString());
+
+                } catch (SQLException e) {
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error interno al obtener datos");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
+                }
+            });
+
+            // CONSULTA DE DATOS ESTADISTICOS : DIA/VENTATOTAL
+            get("/api/ventas-dia-total", ctx -> {
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement stmt = con.prepareStatement(
+                            "SELECT DAYOFWEEK(hora_pedido) AS dia_num, " +
+                                    "       DAYNAME(hora_pedido) AS dia_nombre, " +
+                                    "       SUM(monto_total) AS total " +
+                                    "FROM PEDIDO " +
+                                    "GROUP BY dia_num, dia_nombre " +
+                                    "ORDER BY dia_num;");
+
+                    ResultSet rs = stmt.executeQuery();
+                    JSONArray respuesta = new JSONArray();
+
+                    while (rs.next()) {
+                        JSONObject fila = new JSONObject();
+                        fila.put("dia", rs.getString("dia_nombre"));
+                        fila.put("total", rs.getBigDecimal("total"));
+                        respuesta.put(fila);
+                    }
+
+                    ctx.status(200).result(respuesta.toString());
+                } catch (SQLException e) {
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error al consultar ventas por día");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
+                }
+            });
+
+            // CONSULTA DE DATOS ESTADISTICOS : MES/METODODEPAGO
+            get("/api/ventas-mes-metodo", ctx -> {
+                try (Connection con = ConexionEC2.obtenerConexion()) {
+                    PreparedStatement stmt = con.prepareStatement(
+                            "SELECT MONTHNAME(hora_pedido) AS mes, " +
+                                    "       MONTH(hora_pedido) AS orden_mes, " +
+                                    "       SUM(CASE WHEN metodo_pago = 'efectivo' THEN monto_total ELSE 0 END) AS efectivo, "
+                                    +
+                                    "       SUM(CASE WHEN metodo_pago = 'tarjeta' THEN monto_total ELSE 0 END) AS tarjeta "
+                                    +
+                                    "FROM PEDIDO " +
+                                    "GROUP BY MONTHNAME(hora_pedido), MONTH(hora_pedido) " +
+                                    "ORDER BY orden_mes;");
+
+                    ResultSet rs = stmt.executeQuery();
+                    JSONArray respuesta = new JSONArray();
+
+                    while (rs.next()) {
+                        JSONObject fila = new JSONObject();
+                        fila.put("mes", rs.getString("mes"));
+                        fila.put("efectivo", rs.getBigDecimal("efectivo"));
+                        fila.put("tarjeta", rs.getBigDecimal("tarjeta"));
+                        respuesta.put(fila);
+                    }
+
+                    ctx.status(200).result(respuesta.toString());
+                } catch (SQLException e) {
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error interno al consultar ventas por método de pago");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
+                }
+            });
+
+            // CONSULTA DE DATOS ESTADISTICOS : MES/VENTATOTAL
+            get("/api/ventas-mes-total", ctx -> {
+                String[] nombresMes = {
+                        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+                };
+
+                List<Map<String, Object>> ventasMes = new ArrayList<>();
+
+                try (Connection conn = ConexionEC2.obtenerConexion();
+                        PreparedStatement stmt = conn.prepareStatement(
+                                "SELECT MONTH(hora_pedido) AS mes_numero, SUM(monto_total) AS total_mes " +
+                                        "FROM PEDIDO GROUP BY MONTH(hora_pedido) ORDER BY mes_numero");
+                        ResultSet rs = stmt.executeQuery()) {
+
+                    while (rs.next()) {
+                        int mesNum = rs.getInt("mes_numero");
+                        double total = rs.getDouble("total_mes");
+                        String nombreMes = nombresMes[mesNum - 1];
+
+                        Map<String, Object> ventaMes = new HashMap<>();
+                        ventaMes.put("mes", nombreMes);
+                        ventaMes.put("total", total);
+                        ventasMes.add(ventaMes);
+                    }
+
+                    JSONObject respuesta = new JSONObject();
+                    respuesta.put("ventas_mensuales", ventasMes);
+                    ctx.status(200).result(respuesta.toString());
+
+                } catch (SQLException e) {
+                    e.printStackTrace(); // solo para logs internos
+                    JSONObject error = new JSONObject();
+                    error.put("error", "Error al consultar ventas mensuales.");
+                    error.put("detalle", e.getMessage());
+                    ctx.status(500).result(error.toString());
                 }
             });
 
